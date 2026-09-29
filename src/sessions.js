@@ -39,12 +39,26 @@ function textOf(content) {
   return '';
 }
 
+// Turn a raw user message into a readable prompt: unwrap pasted content, drop
+// command/system wrapper blocks, and strip any leftover tags.
+function cleanPrompt(raw) {
+  let t = raw
+    .replace(/<pasted_content\b[^>]*>/gi, ' ')
+    .replace(/<\/pasted_content>/gi, ' ')
+    // whole wrapper blocks that carry no user intent
+    .replace(
+      /<(command-[a-z-]+|local-command-[a-z-]+|system-reminder|user-[a-z-]+|bash-[a-z-]+)\b[^>]*>[\s\S]*?<\/\1>/gi,
+      ' '
+    )
+    .replace(/<[^>]+>/g, ' '); // any remaining tags
+  return t.replace(/\s+/g, ' ').trim();
+}
+
 function firstPrompt(entries) {
   for (const e of entries) {
     if (e.type !== 'user' || e.isMeta || e.isSidechain || !e.message) continue;
-    const text = textOf(e.message.content).trim();
-    if (!text || text.startsWith('<')) continue; // skip command/system wrappers
-    return text.replace(/\s+/g, ' ');
+    const text = cleanPrompt(textOf(e.message.content));
+    if (text) return text;
   }
   return '';
 }
@@ -158,10 +172,12 @@ export async function listSessions(sftp, { limit = 50, dir } = {}) {
       s.cwd = (all.find((e) => typeof e.cwd === 'string') || {}).cwd;
       s.prompt = firstPrompt(head);
       s.title = titleOf(all);
+      s.hasConversation = all.some((e) => e.type === 'user' && !e.isMeta && e.message);
     })
   );
 
-  // Sessions with no real conversation (e.g. opened and closed) aren't worth resuming.
-  const sessions = recent.filter((s) => s.prompt || s.title);
+  // Keep anything with a real message, even when no readable title/prompt could be
+  // pulled out (e.g. it started with pasted content); drop only opened-and-closed stubs.
+  const sessions = recent.filter((s) => s.prompt || s.title || s.hasConversation);
   return { sessions, home, root, projects: new Set(sessions.map((s) => s.project)).size };
 }

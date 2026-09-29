@@ -141,7 +141,7 @@ export function sessionChoices(sessions, home) {
   const header = c.gray(`  ${fit('SESSION', titleW)}  ${fit('PROJECT', projW)}  ${'LAST USED'.padStart(ageW)}`);
 
   const rows = sessions.map((s) => {
-    const title = s.title || s.prompt;
+    const title = s.title || s.prompt || '(untitled session)';
     const project = projectPath(s, home);
     return {
       value: s,
