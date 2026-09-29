@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { input, password as passwordPrompt, number } from '@inquirer/prompts';
+import { input, password as passwordPrompt, number, confirm } from '@inquirer/prompts';
 import { connect, defaultKey, sftp, resume } from '../src/ssh.js';
 import { listSessions, ProjectsDirNotFound } from '../src/sessions.js';
-import { c, banner, spinner, theme, sessionChoices, resumeCard } from '../src/ui.js';
+import { c, banner, spinner, theme, sessionChoices, resumeCard, bytes } from '../src/ui.js';
+import { copySession, localSessionFile } from '../src/copy.js';
 import { pickSession } from '../src/picker.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url)));
@@ -12,8 +16,8 @@ const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.ur
 const HELP = `
 ${c.orange('✻')} ${c.bold('claude-ssh')} ${c.gray('v' + pkg.version)}
 
-Connects to a machine over SSH, lists its Claude Code sessions and
-resumes the one you pick in your terminal.
+Connects to a machine over SSH, lists its Claude Code sessions, copies
+the one you pick to this machine and resumes it with your local Claude.
 
 ${c.bold('Usage')}
   claude-ssh ${c.peach('[user@]host')} ${c.gray('[options] [-- claude args]')}
@@ -23,6 +27,7 @@ ${c.bold('Options')}
   ${c.peach('-u, --user')} <name>     SSH username
   ${c.peach('-i, --identity')} <file> Private key ${c.gray('(asks for password if no key works)')}
   ${c.peach('-d, --dir')} <path>      Claude projects folder on the server ${c.gray('(default ~/.claude/projects)')}
+  ${c.peach('-r, --remote')}          Don't copy: run the session on the server over SSH
   ${c.peach('-P, --project')} <text>  Start with the list filtered by project / title
   ${c.peach('-n, --limit')} <n>       Max sessions to show ${c.gray('(default 50)')}
   ${c.peach('-h, --help')}            Show this help
@@ -41,6 +46,7 @@ const { values, positionals } = parseArgs({
     limit: { type: 'string', short: 'n' },
     dir: { type: 'string', short: 'd' },
     project: { type: 'string', short: 'P' },
+    remote: { type: 'boolean', short: 'r' },
     help: { type: 'boolean', short: 'h' },
   },
 });
@@ -134,11 +140,80 @@ async function main() {
     theme,
   });
 
-  resumeCard(session, where, home);
-  const code = await resume(conn, session, claudeArgs);
+  if (values.remote) {
+    resumeCard(session, where, home);
+    const code = await resume(conn, session, claudeArgs);
+    conn.end();
+    console.log(`\n${c.orange('✻')} ${c.gray(`Session closed · disconnected from ${where}`)}\n`);
+    process.exit(code);
+  }
+
+  // Copy the session here and resume it with the local Claude Code.
+  const localCwd = await pickLocalDir(session);
+  const dest = localSessionFile(session, localCwd);
+  const overwrite =
+    !fs.existsSync(dest) ||
+    (await confirm({ message: 'This session already exists here. Replace it with the server copy?', default: true, theme }));
+
+  if (overwrite) {
+    spin = spinner(`Copying session from ${c.bold(where)}`);
+    try {
+      const copied = await copySession(sftpSession, session, localCwd);
+      spin.succeed(`Copied ${c.bold(bytes(copied.bytes))} ${c.gray('→ ' + tildify(copied.dest))}`);
+    } catch (e) {
+      spin.fail('Could not copy the session');
+      throw e;
+    }
+  }
   conn.end();
-  console.log(`\n${c.orange('✻')} ${c.gray(`Session closed · disconnected from ${where}`)}\n`);
+
+  resumeCard({ ...session, cwd: localCwd }, 'this machine', os.homedir());
+  const code = await runLocalClaude(session, localCwd, claudeArgs);
+  console.log(`\n${c.orange('✻')} ${c.gray('Session closed')}\n`);
   process.exit(code);
+}
+
+const expandHome = (p) => (p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p);
+const tildify = (p) => (p.startsWith(os.homedir()) ? '~' + p.slice(os.homedir().length) : p);
+const isDir = (p) => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// Claude resumes a session from its project folder, so it needs a local counterpart.
+async function pickLocalDir(session) {
+  const suggested = session.cwd && isDir(session.cwd) ? session.cwd : process.cwd();
+  const answer = await input({
+    message: 'Local project folder',
+    default: tildify(suggested),
+    theme,
+    validate: (p) => isDir(path.resolve(expandHome(p.trim()))) || 'That folder does not exist on this machine',
+  });
+  return path.resolve(expandHome(answer.trim()));
+}
+
+function runLocalClaude(session, cwd, args) {
+  return new Promise((resolve) => {
+    // Ctrl+C belongs to Claude while it runs; don't let it kill us.
+    const ignore = () => {};
+    process.on('SIGINT', ignore);
+    const child = spawn('claude', ['--resume', session.id, ...args], { cwd, stdio: 'inherit' });
+    child.on('error', (err) => {
+      process.off('SIGINT', ignore);
+      if (err.code === 'ENOENT') {
+        console.error(`${c.red('✖')} Claude Code is not installed on this machine.`);
+        console.error(`  Install it, then run: ${c.bold(`cd ${tildify(cwd)} && claude --resume ${session.id}`)}`);
+        resolve(127);
+      } else resolve(1);
+    });
+    child.on('exit', (code) => {
+      process.off('SIGINT', ignore);
+      resolve(code ?? 0);
+    });
+  });
 }
 
 main().catch((err) => {
