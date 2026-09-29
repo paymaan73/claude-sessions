@@ -1,0 +1,39 @@
+{
+  "name": "claude-ssh-sessions",
+  "version": "1.0.0",
+  "description": "Connect to a remote machine over SSH, list its Claude Code sessions and resume one interactively",
+  "type": "module",
+  "bin": {
+    "claude-ssh": "bin/claude-ssh.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ssh",
+    "sessions",
+    "resume",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^7.0.0",
+    "ssh2": "^1.16.0",
+    "@inquirer/core": "^10.3.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paymaan73/claude-sessions.git"
+  },
+  "homepage": "https://github.com/paymaan73/claude-sessions#readme",
+  "bugs": {
+    "url": "https://github.com/paymaan73/claude-sessions/issues"
+  }
+}
